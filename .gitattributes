@@ -1,4 +1,9 @@
+<<<<<<< HEAD
 /.gitignore export-ignore
 /.gitattributes export-ignore
 /README.md export-ignore
 /CHANGELOG.md export-ignore
+=======
+# Auto detect text files and perform LF normalization
+* text=auto
+>>>>>>> 109bc48c268552125ec95eb2c34b2d6bf1e67595
