@@ -1,0 +1,27 @@
+<h2>ECG Report: {{ file_name }}</h2>
+
+<div class="ecg-summary">
+  <div>Beats {{ summary.beats }}</div>
+  <div>HR (bpm) {{ summary.hr_bpm }}</div>
+  <div>SDNN (ms) {{ summary.sdnn_ms }}</div>
+  <div>RMSSD (ms) {{ summary.rmssd_ms }}</div>
+  <div><strong>Total samples</strong> {{ total_samples|default(0) }}</div>
+  <div><strong>Duration (s)</strong> {{ duration }}</div>
+  <div><strong>fs (Hz)</strong> {{ fs }}</div>
+</div>
+
+<h3>Waveform (first seconds for preview)</h3>
+<p>Use mouse wheel to zoom horizontally, drag to pan. R-peaks will be marked when they are in view.</p>
+
+<canvas id="ecg-canvas" width="1200" height="300" style="width:100%; max-width:100%; border:1px solid #ddd"></canvas>
+
+<h3>RR intervals (ms)</h3>
+{% if rr_ms and rr_ms|length %}
+  <ul>
+    {% for rr in rr_ms %}
+      <li>{{ rr }}</li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p>No RR intervals computed.</p>
+{% endif %}

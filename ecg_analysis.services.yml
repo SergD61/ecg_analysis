@@ -1,0 +1,3 @@
+services:
+  ecg_analysis.analyzer:
+    class: 'Drupal\ecg_analysis\Service\EcgAnalyzer'

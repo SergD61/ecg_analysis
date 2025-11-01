@@ -1,0 +1,7 @@
+viewer:
+  version: 1.x
+  js:
+    js/ecg_viewer.js: {}
+  css:
+    theme:
+      css/ecg_style.css: {}

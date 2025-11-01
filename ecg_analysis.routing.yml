@@ -1,0 +1,19 @@
+ecg_analysis.upload:
+  path: '/admin/ecg/upload-raw'
+  defaults:
+    _form: '\Drupal\ecg_analysis\Form\EcgRawUploadForm'
+    _title: 'ECG raw: upload & existing files'
+  requirements:
+    _permission: 'administer site configuration'
+
+ecg_analysis.report:
+  path: '/admin/ecg/report/{fid}'
+  defaults:
+    _controller: '\Drupal\ecg_analysis\Controller\EcgReportController::report'
+    _title: 'ECG report'
+  requirements:
+    _permission: 'administer site configuration'
+  options:
+    parameters:
+      fid:
+        type: 'entity:file'

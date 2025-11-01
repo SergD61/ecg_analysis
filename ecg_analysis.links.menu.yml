@@ -1,0 +1,6 @@
+ecg_analysis.upload_menu:
+  title: 'ECG raw upload & list'
+  description: 'Upload ER1 raw files and list already uploaded.'
+  route_name: ecg_analysis.upload
+  parent: system.admin_config_media
+  weight: 10

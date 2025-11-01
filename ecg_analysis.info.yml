@@ -1,0 +1,8 @@
+name: 'ECG Analysis'
+type: module
+core_version_requirement: ^11
+package: 'ECG'
+description: 'Local ECG analyzer: upload ER1/Viatom binary, detect R-peaks, show charts & RR stats.'
+version: 0.1.1
+dependencies:
+  - drupal:file

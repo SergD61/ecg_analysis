@@ -1,0 +1,8 @@
+# Changelog
+
+## v0.1.0 — 2025-11-01
+- Потоковая загрузка ER1 (без ограничений расширений).
+- Антидубликат (md5 + size).
+- Страница списка /admin/ecg/upload-raw.
+- Отчёт /admin/ecg/report/{fid}: подсчёт total_samples, duration; предпросмотр на canvas.
+- JS: автоподгон амплитуды, zoom/pan, Retina-friendly.
