@@ -10,7 +10,10 @@
  */
 (function (Drupal) {
   'use strict';
-
+    // Режим «страница = 1 минута, 6 панелей по 10 с».
+    const MINUTE_PAGE_MODE = true;
+    const PANELS = 6;           // 6 вертикальных панелей
+    const PANEL_SECONDS = 10;   // 10 секунд на панель
   // Утилиты
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -157,17 +160,38 @@
       // Убедимся, что у canvas есть видимая высота (если нет — дадим дефолт)
       const hasExplicitHeight = !!canvas.style.height || !!canvas.getAttribute('height');
       if (!hasExplicitHeight) {
-        // Только если не задано: безопасный дефолт
         canvas.style.width = canvas.style.width || '100%';
-        canvas.style.height = canvas.style.height || '300px';
+        // 6 панелей × ~110–120 px = 660–720 px удобно читается
+        canvas.style.height = canvas.style.height || (MINUTE_PAGE_MODE ? '720px' : '300px');
       }
-
       const ctx = canvas.getContext('2d');
 
       // Начальные параметры просмотра: 10 секунд или весь массив, если он короче
       const initialLen = Math.min(data.length, Math.max(fs * 10, 50));
       let viewStart = 0;              // индекс первого видимого сэмпла (float)
       let viewLen   = initialLen;     // сколько сэмплов влезает в текущий вид
+      // Отрисовка одной панели (подпрямоугольник канваса).
+      function renderPanel(y0, hRow, viewStart, viewLen) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, y0, canvas.clientWidth || 1200, hRow);
+        ctx.clip();
+        ctx.translate(0, y0);
+
+        // Сетка и сигнал в пределах панели
+        drawGrid(ctx, canvas.clientWidth || 1200, hRow, fs, viewStart, viewLen);
+        drawSignal(ctx, canvas.clientWidth || 1200, hRow, data, fs, viewStart, viewLen);
+        drawRPeaks(ctx, canvas.clientWidth || 1200, hRow, rpeaks, fs, viewStart, viewLen);
+
+        // Подпись времени слева (например "0–10 c")
+        ctx.fillStyle = 'rgba(0,0,0,.55)';
+        ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+        const t0 = Math.floor(viewStart / fs);
+        const t1 = Math.floor((viewStart + viewLen) / fs);
+        ctx.fillText(`${t0}–${t1} c`, 8, 14);
+
+        ctx.restore();
+      }
 
       // Отрисовка
       function render() {
@@ -188,6 +212,30 @@
 
         // R-пики
         drawRPeaks(ctx, w, h, rpeaks, fs, viewStart, viewLen);
+
+        if (MINUTE_PAGE_MODE) {
+          const samplesPerPanel = Math.max(1, Math.floor(fs * PANEL_SECONDS));
+          const minuteSamples   = Math.max(1, Math.floor(fs * PANEL_SECONDS * PANELS));
+          const available = Math.min(data.length, minuteSamples); // если данных < 60с — рисуем сколько есть
+          const panelsToDraw = Math.min(PANELS, Math.ceil(available / samplesPerPanel));
+
+          // Геометрия панелей: равная высота + небольшие промежутки
+          const gap = 8; // пиксели между панелями
+          const totalGaps = Math.max(0, panelsToDraw - 1) * gap;
+          const hRow = Math.max(60, Math.floor((h - totalGaps) / panelsToDraw));
+
+          for (let r = 0; r < panelsToDraw; r++) {
+            const segStart = r * samplesPerPanel;
+            const y0 = r * (hRow + gap);
+            renderPanel(y0, hRow, segStart, samplesPerPanel);
+          }
+        } else {
+          // Старый режим: одно окно, масштабируемое зумом/панорамой
+          drawGrid(ctx, w, h, fs, viewStart, viewLen);
+          drawSignal(ctx, w, h, data, fs, viewStart, viewLen);
+          drawRPeaks(ctx, w, h, rpeaks, fs, viewStart, viewLen);
+        }				
+				
       }
 
       // Зум мышью (горизонтальный). Центрируем вокруг курсора.
