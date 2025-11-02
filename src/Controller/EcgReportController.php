@@ -10,7 +10,7 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
 final class EcgReportController extends ControllerBase {
 
   private const FS = 125;
-  private const PREVIEW_SECONDS = 10;
+  private const PREVIEW_SECONDS = 60;
 
   public static function create(ContainerInterface $container) {
     return new static();

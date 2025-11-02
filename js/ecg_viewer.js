@@ -1,130 +1,171 @@
 /**
- * ecg_viewer.js — простой просмотрщик ЭКГ на canvas
+ * ecg_viewer.js — просмотрщик ЭКГ на canvas (минутная страница).
  * Ожидает:
  *   drupalSettings.ecgAnalysis = {
- *     fs: number,              // частота дискретизации (Гц), напр. 125
- *     waveHead: number[],      // массив int (первые секунды для предпросмотра)
- *     rpeaks: number[]         // индексы отсчётов R-пиков (опционально)
+ *     fs: number,         // частота дискретизации (Гц)
+ *     waveHead: number[], // предпросмотр сигнала
+ *     rpeaks: number[]    // индексы R-пиков (необязательно)
  *   }
- * В шаблоне должен быть <canvas id="ecg-canvas">.
+ * В шаблоне — <canvas id="ecg-canvas"> (может быть один или несколько).
  */
 (function (Drupal) {
   'use strict';
-    // Режим «страница = 1 минута, 6 панелей по 10 с».
-    const MINUTE_PAGE_MODE = true;
-    const PANELS = 6;           // 6 вертикальных панелей
-    const PANEL_SECONDS = 10;   // 10 секунд на панель
-  // Утилиты
-  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-  function resizeCanvasToDisplaySize(canvas, ctx) {
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    // Если размеры не заданы стилями — зададим безопасные
-    const cssW = rect.width  || 1200;
-    const cssH = rect.height || 300;
+  // ===== Минутная страница: 6 панелей × 10 с =====
+  const MINUTE_PAGE_MODE = true;
+  const PANELS = 6;
+  const PANEL_SECONDS = 10;
 
-    // Физические пиксели
-    const needW = Math.round(cssW * dpr);
-    const needH = Math.round(cssH * dpr);
+  // Геометрия панелей
+  const PANEL_HEIGHT = 120;        // высота панели в CSS-px
+  const PANEL_GAP = 12;            // отступ между панелями в CSS-px
+	const VERTICAL_PADDING = 0.03;  // 6% сверху и снизу
 
-    if (canvas.width !== needW || canvas.height !== needH) {
-      canvas.width  = needW;
-      canvas.height = needH;
-    }
+  // Ширина: канвас тянется до ширины контейнера, но не шире этого предела
+  const MAX_CANVAS_WIDTH_PX = 1250; // при fs=125 и 10с → 1250 px = 1 px/сэмпл
 
-    // Все дальнейшие операции рисования будут масштабированы под DPR
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return { width: cssW, height: cssH, dpr };
+  // ===== Утилиты =====
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  function ensureCssSize(canvas) {
+    // Канвас заполняет контейнер, но не шире MAX_CANVAS_WIDTH_PX.
+    // Это поведение безопаснее фиксированной ширины.
+    if (!canvas.style.width)    canvas.style.width = '100%';
+    if (!canvas.style.maxWidth) canvas.style.maxWidth = MAX_CANVAS_WIDTH_PX + 'px';
+
+    // Высота ровно под 6 панелей.
+    const hCss = PANELS * PANEL_HEIGHT + (PANELS - 1) * PANEL_GAP;
+    if (!canvas.style.height)   canvas.style.height = hCss + 'px';
   }
 
+  function resizeCanvasToDisplaySize(canvas, ctx) {
+    // Берём фактическую видимую ширину (ограничена max-width)
+    const cssW = Math.min(canvas.clientWidth || MAX_CANVAS_WIDTH_PX, MAX_CANVAS_WIDTH_PX);
+    const hCss = PANELS * PANEL_HEIGHT + (PANELS - 1) * PANEL_GAP;
+    const cssH = canvas.clientHeight || hCss;
+
+    const dpr = window.devicePixelRatio || 1;
+    const displayW = Math.max(1, Math.floor(cssW * dpr));
+    const displayH = Math.max(1, Math.floor(cssH * dpr));
+
+    if (canvas.width !== displayW || canvas.height !== displayH) {
+      canvas.width = displayW;
+      canvas.height = displayH;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // retina-friendly
+    }
+    return { width: cssW, height: cssH };
+  }
+
+  // Глобальная статистика по минуте (для единого масштаба)
+  function computeGlobalStats(data, fromIndex, length) {
+    const start = Math.max(0, fromIndex|0);
+    const end = Math.min(data.length, (start + length)|0);
+    if (end - start < 2) return { ymin: 0, ymax: 1, mean: 0, amp: 1 };
+
+    let ymin = +Infinity, ymax = -Infinity, sum = 0, cnt = 0;
+    for (let i = start; i < end; i++) {
+      const v = data[i];
+      if (v < ymin) ymin = v;
+      if (v > ymax) ymax = v;
+      sum += v; cnt++;
+    }
+    const mean = cnt ? (sum / cnt) : 0;
+    let amp = Math.max(1, ymax - ymin);
+    if (!isFinite(amp) || amp <= 0) amp = 1;
+    return { ymin, ymax, mean, amp };
+  }
+
+  // Сетка: секунды по X + 5 горизонтальных линий
   function drawGrid(ctx, w, h, fs, viewStart, viewLen) {
     ctx.save();
     ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+    ctx.strokeStyle = 'rgba(0,0,0,0.1)';
 
-    // Вертикальные линии каждую секунду
-    const samplesPerSec = Math.max(1, fs | 0);
-    const tStartSec = Math.floor(viewStart / samplesPerSec);
-    const tEndSec   = Math.ceil((viewStart + viewLen) / samplesPerSec);
-
+    // Вертикальные линии на каждую секунду
+    const sps = fs;
+    const tStart = Math.floor(viewStart / sps);
+    const tEnd   = Math.ceil((viewStart + viewLen) / sps);
     ctx.beginPath();
-    for (let s = tStartSec; s <= tEndSec; s++) {
-      const sx = (s * samplesPerSec - viewStart) / viewLen * w;
+    for (let s = tStart; s <= tEnd; s++) {
+      const sx = (s * sps - viewStart) / viewLen * w;
       if (sx >= -1 && sx <= w + 1) {
-        ctx.moveTo(sx + 0.5, 0);
-        ctx.lineTo(sx + 0.5, h);
+        const xi = Math.round(sx) + 0.5;
+        ctx.moveTo(xi, 0);
+        ctx.lineTo(xi, h);
       }
     }
     ctx.stroke();
 
-    // Горизонтальные линии 5 шт по высоте
+    // Горизонтальные деления (5 рядов)
     ctx.beginPath();
     const rows = 5;
     for (let i = 1; i < rows; i++) {
-      const y = (i / rows) * h;
-      ctx.moveTo(0, y + 0.5);
-      ctx.lineTo(w, y + 0.5);
+      const y = Math.round((i / rows) * h) + 0.5;
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
     }
     ctx.stroke();
 
     ctx.restore();
   }
 
-  function drawSignal(ctx, w, h, data, fs, viewStart, viewLen) {
-    if (!data || data.length < 2) return;
+  // Сигнал: можно передать глобальные stats, чтобы масштаб был общий
+	function drawSignal(ctx, w, h, data, fs, viewStart, viewLen, stats) {
+		const start = Math.max(0, Math.floor(viewStart));
+		const end   = Math.min(data.length, Math.ceil(viewStart + viewLen));
 
-    // Видимые границы индексов
-    const start = Math.max(0, Math.floor(viewStart));
-    const end   = Math.min(data.length, Math.ceil(viewStart + viewLen));
-    if (end - start < 2) return;
+		// Пустая панель — горизонтальная линия по центру
+		if (end - start < 2) {
+			ctx.save();
+			ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+			ctx.lineWidth = 1;
+			const y = Math.floor(h / 2) + 0.5;
+			ctx.beginPath();
+			ctx.moveTo(0, y);
+			ctx.lineTo(w, y);
+			ctx.stroke();
+			ctx.restore();
+			return null;
+		}
 
-    // DC-смещение по видимой области
-    let sum = 0;
-    for (let i = start; i < end; i++) sum += data[i];
-    const mean = sum / (end - start);
+		// --- ЕДИНЫЙ "tight fit" масштаб по минуте ---
+		// Берём общий минимум/максимум за минуту, добавляем небольшие отступы.
+		let lo = (stats && Number.isFinite(stats.ymin)) ? stats.ymin : 0;
+		let hi = (stats && Number.isFinite(stats.ymax)) ? stats.ymax : 1;
+		if (!(hi > lo)) { hi = lo + 1; }  // защита от hi==lo
 
-    // Диапазон по амплитуде (после вычитания среднего)
-    let vmin =  Infinity;
-    let vmax = -Infinity;
-    for (let i = start; i < end; i++) {
-      const v = data[i] - mean;
-      if (v < vmin) vmin = v;
-      if (v > vmax) vmax = v;
-    }
-    // Паддинг 10%
-    const pad = (vmax - vmin) * 0.10;
-    const ymin = vmin - pad;
-    const ymax = vmax + pad;
-    const yrange = (ymax - ymin) || 1;
+		const padTop = VERTICAL_PADDING * h;
+		const padBot = VERTICAL_PADDING * h;
+		const innerH = Math.max(1, h - padTop - padBot);
 
-    // Децимация по ширине: одна точка на колонку (минимум шаг 1)
-    const approxPoints = end - start;
-    const step = Math.max(1, Math.floor(approxPoints / Math.max(1, Math.floor(w))));
+		const toX = (i) => ((i - viewStart) / viewLen) * w;
+		const toY = (v) => {
+			// frac=0 → v=lo → внизу; frac=1 → v=hi → вверху
+			const frac = (v - lo) / (hi - lo);
+			const yInner = (1 - frac) * innerH;      // 0..innerH
+			return Math.round(padTop + yInner) + 0.5; // в координатах панели
+		};
 
-    ctx.save();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = '#0b66e0';
-    ctx.beginPath();
+		ctx.save();
+		ctx.lineWidth = 1.25;
+		ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+		ctx.beginPath();
 
-    let first = true;
-    for (let i = start; i < end; i += step) {
-      const x = ((i - viewStart) / viewLen) * w;
-      const vAdj = data[i] - mean;
-      const y = h - ((vAdj - ymin) / yrange) * h;
-      if (first) {
-        ctx.moveTo(x, y);
-        first = false;
-      } else {
-        ctx.lineTo(x, y);
-      }
-    }
-    ctx.stroke();
-    ctx.restore();
+		let first = true;
+		for (let i = start; i < end; i++) {
+			const x = toX(i);
+			if (x < -2 || x > w + 2) continue;
+			const y = toY(data[i]);
+			if (first) { ctx.moveTo(x, y); first = false; }
+			else { ctx.lineTo(x, y); }
+		}
+		ctx.stroke();
+		ctx.restore();
 
-    return { ymin, ymax, mean }; // на случай отладки/оверлеев
-  }
+		return true;
+	}
 
+  // Маркеры R-пиков
   function drawRPeaks(ctx, w, h, rpeaks, fs, viewStart, viewLen) {
     if (!rpeaks || !rpeaks.length) return;
     ctx.save();
@@ -134,173 +175,137 @@
       const s = rpeaks[k];
       if (s < viewStart || s > viewStart + viewLen) continue;
       const x = ((s - viewStart) / viewLen) * w;
+      const xi = Math.round(x) + 0.5;
       ctx.beginPath();
-      ctx.moveTo(x + 0.5, 0);
-      ctx.lineTo(x + 0.5, h);
+      ctx.moveTo(xi, 0);
+      ctx.lineTo(xi, h);
       ctx.stroke();
     }
+    ctx.restore();
+  }
+
+  // Рамка панели и более тёмный разделитель снизу
+  function drawPanelFrame(ctx, w, h) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.moveTo(0, h - 0.5);
+    ctx.lineTo(w, h - 0.5);
+    ctx.stroke();
     ctx.restore();
   }
 
   Drupal.behaviors.ecgViewer = {
     attach: function (context, settings) {
       const cfg = (settings && settings.ecgAnalysis) || {};
-      const data = (cfg.waveHead || []).map(Number);
-      const fs   = Number(cfg.fs || 125);
+      const data   = (cfg.waveHead || []).map(Number);
+      const fs     = Number(cfg.fs || 125);
       const rpeaks = Array.isArray(cfg.rpeaks) ? cfg.rpeaks : [];
 
-      // Инициализируем один раз на элемент
-      const canvas = context.querySelector && context.querySelector('#ecg-canvas');
-      if (!canvas || canvas.dataset.ecgViewerInit === '1') return;
-      canvas.dataset.ecgViewerInit = '1';
+      // Может вызываться на разных контекстах (BigPipe/AJAX),
+      // ищем все canvas и инициализируем каждый ровно один раз.
+      const canvases = (context.querySelectorAll ? context.querySelectorAll('#ecg-canvas') : []) || [];
+      canvases.forEach((canvas) => {
+        if (!canvas) return;
+        if (canvas.dataset && canvas.dataset.ecgInit === '1') return;
+        if (canvas.dataset) canvas.dataset.ecgInit = '1';
 
-      // Если данных нет — просто выходим
-      if (!data.length) return;
+        const ctx = canvas.getContext('2d');
+        ensureCssSize(canvas);
 
-      // Убедимся, что у canvas есть видимая высота (если нет — дадим дефолт)
-      const hasExplicitHeight = !!canvas.style.height || !!canvas.getAttribute('height');
-      if (!hasExplicitHeight) {
-        canvas.style.width = canvas.style.width || '100%';
-        // 6 панелей × ~110–120 px = 660–720 px удобно читается
-        canvas.style.height = canvas.style.height || (MINUTE_PAGE_MODE ? '720px' : '300px');
-      }
-      const ctx = canvas.getContext('2d');
+        // Старый режим (если когда-нибудь выключите минутный)
+        let viewStart = 0;
+        let viewLen   = Math.max(1, Math.floor(fs * 5));
+        viewLen = Math.min(viewLen, Math.max(1, data.length));
 
-      // Начальные параметры просмотра: 10 секунд или весь массив, если он короче
-      const initialLen = Math.min(data.length, Math.max(fs * 10, 50));
-      let viewStart = 0;              // индекс первого видимого сэмпла (float)
-      let viewLen   = initialLen;     // сколько сэмплов влезает в текущий вид
-      // Отрисовка одной панели (подпрямоугольник канваса).
-      function renderPanel(y0, hRow, viewStart, viewLen) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(0, y0, canvas.clientWidth || 1200, hRow);
-        ctx.clip();
-        ctx.translate(0, y0);
+        // Логи диагностики
+        console.log('[ECG] fs=', fs, 'samples=', data.length, 'seconds=', (data.length / fs).toFixed(2));
 
-        // Сетка и сигнал в пределах панели
-        drawGrid(ctx, canvas.clientWidth || 1200, hRow, fs, viewStart, viewLen);
-        drawSignal(ctx, canvas.clientWidth || 1200, hRow, data, fs, viewStart, viewLen);
-        drawRPeaks(ctx, canvas.clientWidth || 1200, hRow, rpeaks, fs, viewStart, viewLen);
+        // Подготовка глобальной статистики по минуте для единого масштаба
+        const samplesPerPanel = Math.max(1, Math.floor(fs * PANEL_SECONDS)); // 10с → fs*10
+        const minuteSamples   = Math.max(1, samplesPerPanel * PANELS);       // 60с
+        const available       = Math.min(data.length, minuteSamples);
+        const globalStats     = computeGlobalStats(data, 0, available);
 
-        // Подпись времени слева (например "0–10 c")
-        ctx.fillStyle = 'rgba(0,0,0,.55)';
-        ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
-        const t0 = Math.floor(viewStart / fs);
-        const t1 = Math.floor((viewStart + viewLen) / fs);
-        ctx.fillText(`${t0}–${t1} c`, 8, 14);
+        function renderPanel(y0, hRow, segStart, segLen, w) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, y0, w, hRow);
+          ctx.clip();
+          ctx.translate(0, y0);
 
-        ctx.restore();
-      }
+          const _prevVS = viewStart, _prevVL = viewLen;
+          viewStart = segStart; viewLen = segLen;
 
-      // Отрисовка
-      function render() {
-        const dims = resizeCanvasToDisplaySize(canvas, ctx);
-        const w = dims.width;
-        const h = dims.height;
+          drawGrid(ctx, w, hRow, fs, viewStart, viewLen);
+          // единый вертикальный масштаб: передаём globalStats
+          drawSignal(ctx, w, hRow, data, fs, viewStart, viewLen, globalStats);
+          drawRPeaks(ctx, w, hRow, rpeaks, fs, viewStart, viewLen);
 
-        // Фон
-        ctx.clearRect(0, 0, w, h);
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, w, h);
+          ctx.fillStyle = 'rgba(0,0,0,.65)';
+          ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+          const t0 = Math.floor(viewStart / fs);
+          const t1 = Math.floor((viewStart + viewLen) / fs);
+          ctx.fillText(`${t0}–${t1} c`, 8, 14);
 
-        // Сетка
-        drawGrid(ctx, w, h, fs, viewStart, viewLen);
+          viewStart = _prevVS; viewLen = _prevVL;
 
-        // Сигнал
-        drawSignal(ctx, w, h, data, fs, viewStart, viewLen);
+          ctx.restore();
+          ctx.save();
+          ctx.translate(0, y0);
+          drawPanelFrame(ctx, w, hRow);
+          ctx.restore();
+        }
 
-        // R-пики
-        drawRPeaks(ctx, w, h, rpeaks, fs, viewStart, viewLen);
+        function render() {
+          const dims = resizeCanvasToDisplaySize(canvas, ctx);
+          const w = dims.width;
+          const h = dims.height;
 
-        if (MINUTE_PAGE_MODE) {
-          const samplesPerPanel = Math.max(1, Math.floor(fs * PANEL_SECONDS));
-          const minuteSamples   = Math.max(1, Math.floor(fs * PANEL_SECONDS * PANELS));
-          const available = Math.min(data.length, minuteSamples); // если данных < 60с — рисуем сколько есть
-          const panelsToDraw = Math.min(PANELS, Math.ceil(available / samplesPerPanel));
+          // Очистка и фон
+          ctx.clearRect(0, 0, w, h);
+          ctx.fillStyle = '#fff';
+          ctx.fillRect(0, 0, w, h);
 
-          // Геометрия панелей: равная высота + небольшие промежутки
-          const gap = 8; // пиксели между панелями
-          const totalGaps = Math.max(0, panelsToDraw - 1) * gap;
-          const hRow = Math.max(60, Math.floor((h - totalGaps) / panelsToDraw));
+          if (MINUTE_PAGE_MODE) {
+            const hRow = PANEL_HEIGHT;
+            const gap  = PANEL_GAP;
 
-          for (let r = 0; r < panelsToDraw; r++) {
-            const segStart = r * samplesPerPanel;
-            const y0 = r * (hRow + gap);
-            renderPanel(y0, hRow, segStart, samplesPerPanel);
+            for (let r = 0; r < PANELS; r++) {
+              const segStart = r * samplesPerPanel; // 0–10, 10–20, …
+              const y0 = r * (hRow + gap);
+              renderPanel(y0, hRow, segStart, samplesPerPanel, w);
+            }
+            return;
           }
-        } else {
-          // Старый режим: одно окно, масштабируемое зумом/панорамой
+
+          // --- Старый режим (одна панель, зум/пан) ---
           drawGrid(ctx, w, h, fs, viewStart, viewLen);
-          drawSignal(ctx, w, h, data, fs, viewStart, viewLen);
+          drawSignal(ctx, w, h, data, fs, viewStart, viewLen, null);
           drawRPeaks(ctx, w, h, rpeaks, fs, viewStart, viewLen);
-        }				
-				
-      }
+        }
 
-      // Зум мышью (горизонтальный). Центрируем вокруг курсора.
-      function onWheel(e) {
-        e.preventDefault();
-        const rect = canvas.getBoundingClientRect();
-        const x = (e.clientX - rect.left);
-        const frac = clamp(x / Math.max(1, rect.width), 0, 1);
+        // Зум/пан отключены в минутном режиме: обработчики просто ничего не делают
+        function onWheel(e) { if (MINUTE_PAGE_MODE) return; e.preventDefault(); /* старый код — опущен */ }
+        function onDown(e)  { if (MINUTE_PAGE_MODE) return; e.preventDefault(); /* старый код — опущен */ }
+        function onMove(e)  { if (MINUTE_PAGE_MODE) return; /* ... */ }
+        function onUp()     { if (MINUTE_PAGE_MODE) return; /* ... */ }
 
-        const zoomFactor = Math.exp(-e.deltaY * 0.0015); // <1 — приближение, >1 — отдаление
-        const minLen = 25;                       // минимум сэмплов в окне
-        const maxLen = data.length;
-
-        const centerSample = viewStart + frac * viewLen;
-        const newLen = clamp(viewLen * zoomFactor, minLen, maxLen);
-        viewStart = clamp(centerSample - frac * newLen, 0, Math.max(0, data.length - newLen));
-        viewLen = newLen;
+        canvas.addEventListener('wheel', onWheel, { passive: false });
+        canvas.addEventListener('mousedown', onDown, { passive: false });
+        canvas.addEventListener('mousemove', onMove, { passive: false });
+        window.addEventListener('mouseup', onUp, { passive: true });
+        canvas.addEventListener('touchstart', onDown, { passive: false });
+        canvas.addEventListener('touchmove', onMove, { passive: false });
+        window.addEventListener('touchend', onUp, { passive: true });
+        window.addEventListener('touchcancel', onUp, { passive: true });
 
         render();
-      }
-
-      // Панорамирование: Drag
-      let dragging = false;
-      let lastX = 0;
-      function onDown(e) {
-        dragging = true;
-        lastX = (e.touches ? e.touches[0].clientX : e.clientX);
-        e.preventDefault();
-      }
-      function onMove(e) {
-        if (!dragging) return;
-        const clientX = (e.touches ? e.touches[0].clientX : e.clientX);
-        const rect = canvas.getBoundingClientRect();
-        const dx = clientX - lastX;
-        lastX = clientX;
-
-        // dx пикселей => смещение в сэмплах
-        const frac = dx / Math.max(1, rect.width);
-        const deltaSamples = frac * viewLen;
-        viewStart = clamp(viewStart - deltaSamples, 0, Math.max(0, data.length - viewLen));
-
-        render();
-        e.preventDefault();
-      }
-      function onUp() {
-        dragging = false;
-      }
-
-      // Resize
-      const ro = new ResizeObserver(() => render());
-      ro.observe(canvas);
-
-      // Подписки
-      canvas.addEventListener('wheel', onWheel, { passive: false });
-      canvas.addEventListener('mousedown', onDown, { passive: false });
-      canvas.addEventListener('mousemove', onMove, { passive: false });
-      window.addEventListener('mouseup', onUp, { passive: true });
-
-      canvas.addEventListener('touchstart', onDown, { passive: false });
-      canvas.addEventListener('touchmove', onMove, { passive: false });
-      window.addEventListener('touchend', onUp, { passive: true });
-      window.addEventListener('touchcancel', onUp, { passive: true });
-
-      // Первый рендер
-      render();
+        window.addEventListener('resize', render, { passive: true });
+      });
     }
   };
 })(Drupal);
