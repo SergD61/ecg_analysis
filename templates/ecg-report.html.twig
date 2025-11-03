@@ -1,19 +1,41 @@
-<h2>ECG Report: {{ file_name }}</h2>
-
+<div class="ecg-fileline"></div>
+<div class="ecg-start-time">Начало записи: <strong class="ecg-fileline-time"></strong></div>
+<h2>Result:</h2>
 <div class="ecg-summary">
   <div>Beats {{ summary.beats }}</div>
-  <div>HR (bpm) {{ summary.hr_bpm }}</div>
-  <div>SDNN (ms) {{ summary.sdnn_ms }}</div>
-  <div>RMSSD (ms) {{ summary.rmssd_ms }}</div>
+  <div>ЧСС, ECG HR (bpm) {{ summary.hr_bpm }}</div>
+  <div>Стандартное отклонение интервалов между последовательными нормальными сердечными сокращениями, SDNN (ms) {{ summary.sdnn_ms }}</div>
+  <div>Вариабельность сердечного ритма RMSSD (ms) {{ summary.rmssd_ms }}</div>
   <div><strong>Total samples</strong> {{ total_samples|default(0) }}</div>
-  <div><strong>Duration (s)</strong> {{ duration }}</div>
+	<div>
+  {% if duration_hm %}
+    <span class="ecg-duration"><strong>Длительность:</strong> {{ duration_hm }}</span>
+  {% endif %}
+	</div>
   <div><strong>fs (Hz)</strong> {{ fs }}</div>
 </div>
 
-<h3>Waveform (first seconds for preview)</h3>
+<h3>View ECG</h3>
 <p>Use mouse wheel to zoom horizontally, drag to pan. R-peaks will be marked when they are in view.</p>
 
 <canvas id="ecg-canvas" width="1200" height="300" style="width:100%; max-width:100%; border:1px solid #ddd"></canvas>
+<div id="ecg-toolbar" class="ecg-toolbar">
+  <button id="ecg-prev" class="ecg-btn">← Пред.</button>
+
+  <div class="ecg-meta">
+    <span id="ecg-start" class="ecg-start"></span>
+    <span id="ecg-counter" class="ecg-counter"></span>
+    <span id="ecg-current" class="ecg-time"></span>
+  </div>
+
+  <div class="ecg-jump">
+    <label for="ecg-goto" class="ecg-label">Минута:</label>
+    <input id="ecg-goto" type="number" min="1" step="1" class="ecg-input" />
+    <button id="ecg-go" class="ecg-btn">Перейти</button>
+  </div>
+
+  <button id="ecg-next" class="ecg-btn">След. →</button>
+</div>
 
 <h3>RR intervals (ms)</h3>
 {% if rr_ms and rr_ms|length %}

@@ -19,7 +19,11 @@
   // Геометрия панелей
   const PANEL_HEIGHT = 120;        // высота панели в CSS-px
   const PANEL_GAP = 12;            // отступ между панелями в CSS-px
-	const VERTICAL_PADDING = 0.03;  // 6% сверху и снизу
+	const VERTICAL_PADDING = 0.06;  // 6% сверху и снизу
+	
+	// Максимальная допустимая амплитуда сигнала (в отсчётах int16)
+	const AMP_HARD_CAP = 1500; // можно 1000..2000, подстройте по месту
+	// опционально: позволить задать через drupalSettings.ecgAnalysis.ampCap
 
   // Ширина: канвас тянется до ширины контейнера, но не шире этого предела
   const MAX_CANVAS_WIDTH_PX = 1250; // при fs=125 и 10с → 1250 px = 1 px/сэмпл
@@ -128,24 +132,34 @@
 			return null;
 		}
 
-		// --- ЕДИНЫЙ "tight fit" масштаб по минуте ---
-		// Берём общий минимум/максимум за минуту, добавляем небольшие отступы.
+		// --- ЕДИНЫЙ "tight fit" масштаб по минуте с ЖЁСТКИМ ПОТОЛКОМ ---
 		let lo = (stats && Number.isFinite(stats.ymin)) ? stats.ymin : 0;
 		let hi = (stats && Number.isFinite(stats.ymax)) ? stats.ymax : 1;
-		if (!(hi > lo)) { hi = lo + 1; }  // защита от hi==lo
 
+		// 1) прижмём статистику к жёсткой рамке ±CAP
+		// кап можно взять из drupalSettings.ecgAnalysis.ampCap, если передан
+		const capFromSettings = (window.drupalSettings && window.drupalSettings.ecgAnalysis && Number(window.drupalSettings.ecgAnalysis.ampCap)) || null;
+		const CAP = Number.isFinite(capFromSettings) ? capFromSettings : AMP_HARD_CAP;
+
+		lo = Math.max(lo, -CAP);
+		hi = Math.min(hi, +CAP);
+
+		// если весь диапазон «сломался» (всё выше CAP или всё ниже -CAP) — поднимем базовый диапазон
+		if (!(hi > lo)) { lo = -CAP; hi = CAP; }
+
+		// небольшой внутренний отступ (как было)
 		const padTop = VERTICAL_PADDING * h;
 		const padBot = VERTICAL_PADDING * h;
 		const innerH = Math.max(1, h - padTop - padBot);
 
 		const toX = (i) => ((i - viewStart) / viewLen) * w;
 		const toY = (v) => {
-			// frac=0 → v=lo → внизу; frac=1 → v=hi → вверху
-			const frac = (v - lo) / (hi - lo);
-			const yInner = (1 - frac) * innerH;      // 0..innerH
-			return Math.round(padTop + yInner) + 0.5; // в координатах панели
+			const vv = Math.max(-CAP, Math.min(+CAP, v)); // на всякий случай отсекаем и саму кривую
+			const frac = (vv - lo) / (hi - lo);           // 0..1
+			const yInner = (1 - frac) * innerH;
+			return Math.round(padTop + yInner) + 0.5;
 		};
-
+		
 		ctx.save();
 		ctx.lineWidth = 1.25;
 		ctx.strokeStyle = 'rgba(0,0,0,0.9)';
@@ -201,10 +215,142 @@
   Drupal.behaviors.ecgViewer = {
     attach: function (context, settings) {
       const cfg = (settings && settings.ecgAnalysis) || {};
-      const data   = (cfg.waveHead || []).map(Number);
-      const fs     = Number(cfg.fs || 125);
-      const rpeaks = Array.isArray(cfg.rpeaks) ? cfg.rpeaks : [];
+			const filename = cfg.filename || '';
+			const startTsRounded = Number(cfg.startTsRounded || 0);
+			let   currentTsRounded = Number(cfg.currentTsRounded || 0);
+			const data = (cfg.waveHead || []).map(Number);
+			let fs     = Number(cfg.fs || 125);
+			let rpeaks = Array.isArray(cfg.rpeaks) ? cfg.rpeaks : [];			
+			const totalMinutes  = Number(cfg.totalMinutes || 1);
+			const currentMinute = Number(cfg.currentMinute || 1);
+			const fid = cfg.fid;
+			const durationHM = cfg.duration_hm || '';
+			const elDuration = document.getElementById('ecg-duration');
+			if (elDuration && durationHM) elDuration.textContent = `длительность: ${durationHM} ч`;
 
+			const fileLine = context.querySelector('.ecg-fileline');
+			const fileLineTime = context.querySelector('.ecg-fileline-time');
+			if (fileLine) fileLine.textContent = 'Файл: ' + filename;
+			if (fileLineTime)	fileLineTime.textContent = fmtYmdHM(startTsRounded);
+			
+			// форматирование времени начала (округлено до минуты):
+			function fmtStart(ts) {
+				if (!ts) return '';
+				const d = new Date(ts * 1000);
+				// Локально: YYYY-MM-DD HH:MM
+				const yyyy = d.getFullYear();
+				const mm   = String(d.getMonth()+1).padStart(2,'0');
+				const dd   = String(d.getDate()).padStart(2,'0');
+				const HH   = String(d.getHours()).padStart(2,'0');
+				const MM   = String(d.getMinutes()).padStart(2,'0');
+				return `${yyyy}-${mm}-${dd} ${HH}:${MM}`;
+			}
+			function fmtYmdHM(tsSec) {
+				if (!tsSec) return '';
+				const d = new Date(tsSec * 1000);
+				const yyyy = d.getFullYear();
+				const mm   = String(d.getMonth()+1).padStart(2,'0');
+				const dd   = String(d.getDate()).padStart(2,'0');
+				const HH   = String(d.getHours()).padStart(2,'0');
+				const MM   = String(d.getMinutes()).padStart(2,'0');
+				return `${yyyy}-${mm}-${dd} ${HH}:${MM}`;
+			}
+			// ссылка на функцию перерисовки, появится после init canvas
+			let scheduleRender = null;
+
+			// состояние навигации по минутам, чтобы Prev/Next считались верно
+			let state = {
+				current: Number(cfg.currentMinute || 1),
+				total:   Number(cfg.totalMinutes  || 1),
+			};
+
+			// инициализация панели:
+			const toolbar = context.querySelector && context.querySelector('#ecg-toolbar');
+			if (toolbar) {
+				const elPrev = toolbar.querySelector('#ecg-prev');
+				const elNext = toolbar.querySelector('#ecg-next');
+				const elStart= toolbar.querySelector('#ecg-start');
+				const elCnt  = toolbar.querySelector('#ecg-counter');
+				const elGoto = toolbar.querySelector('#ecg-goto');
+				const elGo   = toolbar.querySelector('#ecg-go');
+
+				// если контроллер не передал currentTsRounded — посчитаем от старта и номера минуты
+				if (!currentTsRounded && startTsRounded && currentMinute) {
+					currentTsRounded = startTsRounded + 60 * (currentMinute - 1);
+				}
+
+				// элемент для текущего времени
+				const elCurrent = toolbar.querySelector('#ecg-current');
+
+				// первичное заполнение полей
+				if (elStart)   elStart.textContent   = `Начало: ${fmtYmdHM(startTsRounded)}`;
+				if (elCnt)     elCnt.textContent     = `${currentMinute} из ${totalMinutes}`;
+				if (elGoto)  { elGoto.min = 1; elGoto.max = Math.max(1, totalMinutes); elGoto.value = currentMinute; }
+				if (elPrev)    elPrev.disabled        = (currentMinute <= 1);
+				if (elNext)    elNext.disabled        = (currentMinute >= totalMinutes);
+				if (elCurrent) elCurrent.textContent  = `Текущая минута: ${fmtYmdHM(currentTsRounded)}`;
+
+				// текстовые поля:
+				if (elStart) elStart.textContent = fmtStart(startTsRounded);
+				if (elCnt)   elCnt.textContent   = `${currentMinute} из ${totalMinutes}`;
+				if (elGoto) {
+					elGoto.min = 1;
+					elGoto.max = Math.max(1, totalMinutes);
+					elGoto.value = currentMinute;
+				}
+
+				// дизейблим кнопки, если вышли за границы
+				if (elPrev) elPrev.disabled = (currentMinute <= 1);
+				if (elNext) elNext.disabled = (currentMinute >= totalMinutes);
+
+				// хелпер: перейти на минуту N (1-based)
+				function gotoMinuteAjax(n) {
+					n = Math.max(1, Math.min(state.total, Math.floor(Number(n)||1)));
+					const base = window.location.pathname; // /admin/ecg/report/{fid}
+					const url  = `${base}/minute?min=${n}`;
+
+					fetch(url, { headers: { 'Accept': 'application/json' }})
+						.then(r => r.json())
+						.then(j => {
+							// данные и метаданные
+							cfg.waveHead = j.waveHead;
+							cfg.fs = j.fs;
+							cfg.rpeaks = j.rpeaks || [];
+
+							fs = Number(cfg.fs || 125);        // важно: обновляем переменную, а не только cfg
+							rpeaks = cfg.rpeaks;               // тоже обновляем ссылку
+
+							// состояние минут
+							state.current = Number(j.currentMinute || 1);
+							state.total   = Number(j.totalMinutes  || 1);
+
+							// UI
+							if (elCnt)   elCnt.textContent   = `${state.current} из ${state.total}`;
+							if (elStart) elStart.textContent = `Начало: ${fmtYmdHM(startTsRounded)}`;
+							const elCurrent = document.getElementById('ecg-current');
+							if (elCurrent) elCurrent.textContent = `Текущая минута: ${fmtYmdHM(currentTsRounded)}`;
+							if (elGoto)  elGoto.value = state.current;
+							if (elPrev)  elPrev.disabled = (state.current <= 1);
+							if (elNext)  elNext.disabled = (state.current >= state.total);
+							currentTsRounded = Number(j.startTsRounded || 0) + 60 * (Number(j.currentMinute || 1) - 1);
+							if (elCurrent) elCurrent.textContent = `Текущая минута: ${fmtYmdHM(currentTsRounded)}`;
+
+							// подменяем массив данных и перерисовываем
+							data.length = 0; Array.prototype.push.apply(data, j.waveHead.map(Number));
+							if (typeof scheduleRender === 'function') scheduleRender();
+							// обновим адресную строку без перезагрузки
+							history.replaceState(null, '', `${base}?min=${state.current}`);
+						})
+						.catch(console.error);
+				}
+				// обработчики:
+				if (elPrev) elPrev.addEventListener('click', () => gotoMinuteAjax(state.current - 1));
+				if (elNext) elNext.addEventListener('click', () => gotoMinuteAjax(state.current + 1));
+				if (elGo && elGoto) elGo.addEventListener('click', () => gotoMinuteAjax(elGoto.value));
+				if (elGoto) elGoto.addEventListener('keydown', (e) => {
+					if (e.key === 'Enter') { e.preventDefault(); gotoMinuteAjax(elGoto.value); }
+				});
+			}
       // Может вызываться на разных контекстах (BigPipe/AJAX),
       // ищем все canvas и инициализируем каждый ровно один раз.
       const canvases = (context.querySelectorAll ? context.querySelectorAll('#ecg-canvas') : []) || [];
@@ -281,12 +427,12 @@
             }
             return;
           }
-
           // --- Старый режим (одна панель, зум/пан) ---
           drawGrid(ctx, w, h, fs, viewStart, viewLen);
           drawSignal(ctx, w, h, data, fs, viewStart, viewLen, null);
           drawRPeaks(ctx, w, h, rpeaks, fs, viewStart, viewLen);
         }
+				scheduleRender = render;
 
         // Зум/пан отключены в минутном режиме: обработчики просто ничего не делают
         function onWheel(e) { if (MINUTE_PAGE_MODE) return; e.preventDefault(); /* старый код — опущен */ }
