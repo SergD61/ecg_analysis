@@ -15,12 +15,16 @@ function ecg_analysis_theme($existing, $type, $theme, $path) {
       'template' => 'ecg-report',                // файл ecg-report.html.twig
       'path' => $module_path . '/templates',     // каталог с шаблоном
       'variables' => [
+        'fid' => NULL,
         'file_name' => NULL,
         'summary'   => [],
         'duration'  => 0,
+        'duration_s' => NULL,
+        'duration_hm' => NULL,
         'fs'        => 0,
         'rr_ms'     => [],
         'total_samples'  => 0,
+        'filename' => NULL,
       ],
     ],
   ];

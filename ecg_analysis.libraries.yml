@@ -1,5 +1,5 @@
 viewer:
-  version: 1.8
+  version: 1.38
   js:
     js/ecg_viewer.js: {}
   css:

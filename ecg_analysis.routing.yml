@@ -17,3 +17,14 @@ ecg_analysis.report:
     parameters:
       fid:
         type: 'entity:file'
+ecg_analysis.report_minute:
+  path: '/admin/ecg/report/{fid}/minute'
+  defaults:
+    _controller: '\Drupal\ecg_analysis\Controller\EcgReportController::minuteJson'
+    _format: 'json'
+  requirements:
+    _permission: 'administer site configuration'
+  options:
+    parameters:
+      fid:
+        type: 'entity:file'
