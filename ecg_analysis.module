@@ -2,6 +2,7 @@
 
 use Drupal\Core\Database\Database;
 use Drupal\Core\Extension\ExtensionList;
+use Drupal\Core\Session\AccountProxyInterface;
 
 /**
  * Implements hook_theme().
@@ -31,42 +32,22 @@ function ecg_analysis_theme($existing, $type, $theme, $path) {
 }
 
 /**
- * Implements hook_schema().
- */
-function ecg_analysis_schema() {
-  $schema['ecg_raw_index'] = [
-    'description' => 'Index of uploaded ER1 raw ECG files',
-    'fields' => [
-      'fid' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE],
-      'uri' => ['type' => 'varchar', 'length' => 512, 'not null' => TRUE],
-      'filename' => ['type' => 'varchar', 'length' => 255, 'not null' => TRUE],
-      'size' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE],
-      'md5' => ['type' => 'varchar', 'length' => 32, 'not null' => TRUE],
-      'created' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE],
-    ],
-    'primary key' => ['fid'],
-    'indexes' => [
-      'md5_size' => ['md5', 'size'],
-      'created' => ['created'],
-    ],
-  ];
-  return $schema;
-}
-
-/**
  * Helper: register file in index.
  */
 function ecg_analysis_index_file(\Drupal\file\FileInterface $file, string $md5): void {
+	$uid = \Drupal::currentUser()->id();
+
   $conn = Database::getConnection();
-  $conn->upsert('ecg_raw_index')              // ← upsert вместо merge
-    ->key('fid')                              // ← ключ — первичный fid
-    ->fields([
-      'fid'      => (int) $file->id(),        // upsert требует включить key в fields
-      'uri'      => $file->getFileUri(),
-      'filename' => $file->getFilename(),
+	$conn->upsert('ecg_raw_index')
+		->key('fid')
+		->fields([
+			'uid'           => (int) $uid,        // НОВОЕ: владелец
+			'fid'           => (int) $file->id(),
+			'uri'           => $file->getFileUri(),
+			'filename'      => $file->getFilename(),
       'size'     => (int) $file->getSize(),
-      'md5'      => $md5,
+			'md5'           => $md5,
       'created'  => \Drupal::time()->getRequestTime(),
-    ])
-    ->execute();
+		])
+		->execute();
 }

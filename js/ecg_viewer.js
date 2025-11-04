@@ -340,8 +340,16 @@
 							if (typeof scheduleRender === 'function') scheduleRender();
 							// обновим адресную строку без перезагрузки
 							history.replaceState(null, '', `${base}?min=${state.current}`);
+							updateCsvLink(state.current); // используем фактическую текущую минуту UI
 						})
 						.catch(console.error);
+				}
+				function updateCsvLink(currentMinute) {
+					const a = document.getElementById('csv-download');
+					if (!a) return;
+					const url = new URL(a.href, window.location.origin);
+					url.searchParams.set('min', String(currentMinute));
+					a.href = url.toString();
 				}
 				// обработчики:
 				if (elPrev) elPrev.addEventListener('click', () => gotoMinuteAjax(state.current - 1));
@@ -350,7 +358,9 @@
 				if (elGoto) elGoto.addEventListener('keydown', (e) => {
 					if (e.key === 'Enter') { e.preventDefault(); gotoMinuteAjax(elGoto.value); }
 				});
+				updateCsvLink(state.current);
 			}
+
       // Может вызываться на разных контекстах (BigPipe/AJAX),
       // ищем все canvas и инициализируем каждый ровно один раз.
       const canvases = (context.querySelectorAll ? context.querySelectorAll('#ecg-canvas') : []) || [];
@@ -366,9 +376,6 @@
         let viewStart = 0;
         let viewLen   = Math.max(1, Math.floor(fs * 5));
         viewLen = Math.min(viewLen, Math.max(1, data.length));
-
-        // Логи диагностики
-        console.log('[ECG] fs=', fs, 'samples=', data.length, 'seconds=', (data.length / fs).toFixed(2));
 
         // Подготовка глобальной статистики по минуте для единого масштаба
         const samplesPerPanel = Math.max(1, Math.floor(fs * PANEL_SECONDS)); // 10с → fs*10
