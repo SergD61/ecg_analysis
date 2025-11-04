@@ -1,0 +1,31 @@
+<?php
+
+/**
+ * @file
+ * Installation and update functions for the ecg_analysis module.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function ecg_analysis_schema() {
+  $schema['ecg_raw_index'] = [
+    'description' => 'Index of uploaded ER1 raw ECG files',
+    'fields' => [
+      'uid' => ['type' => 'int', 'length' => 10, 'unsigned' => TRUE, 'not null' => TRUE],
+      'fid' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE],
+      'uri' => ['type' => 'varchar', 'length' => 512, 'not null' => TRUE],
+      'filename' => ['type' => 'varchar', 'length' => 255, 'not null' => TRUE],
+      'size' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE],
+      'md5' => ['type' => 'varchar', 'length' => 32, 'not null' => TRUE],
+      'created' => ['type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE],
+    ],
+    'primary key' => ['fid'],
+    'indexes' => [
+      'uid' => ['uid'],
+      'md5_size' => ['md5', 'size'],
+      'created' => ['created'],
+    ],
+  ];
+  return $schema;
+}

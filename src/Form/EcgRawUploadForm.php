@@ -10,6 +10,7 @@ use Drupal\Core\Url;
 use Drupal\Core\Link;
 use Drupal\Core\Database\Database;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
+use Drupal\Core\Session\AccountProxyInterface;
 
 final class EcgRawUploadForm extends FormBase {
 
@@ -64,8 +65,10 @@ final class EcgRawUploadForm extends FormBase {
     ];
 
     $rows = [];
+		$uid = \Drupal::currentUser()->id();
     $result = Database::getConnection()->select('ecg_raw_index', 'i')
       ->fields('i', ['fid', 'filename', 'size', 'md5', 'created'])
+			->condition('i.uid', (int) $uid)
       ->orderBy('created', 'DESC')
       ->execute();
 
@@ -147,13 +150,14 @@ final class EcgRawUploadForm extends FormBase {
 		$size = (int) filesize($path);
 
 		// Проверка дубликата
-		$dup = \Drupal::database()->select('ecg_raw_index', 'i')
+		$uid = \Drupal::currentUser()->id();
+		$dup = Database::getConnection()->select('ecg_raw_index', 'i')
 			->fields('i', ['fid'])
-			->condition('md5', $md5)
-			->condition('size', $size)
+			->condition('i.uid', (int) $uid)   // ← важно!
+			->condition('i.md5', $md5)
+			->condition('i.size', (int) $file->getSize())
 			->execute()
 			->fetchField();
-
 		if ($dup) {
 			$url  = \Drupal\Core\Url::fromRoute('ecg_analysis.upload', [], ['query' => ['duplicate' => (int) $dup]]);
 			$link = \Drupal\Core\Link::fromTextAndUrl($this->t('see existing file'), $url)->toString();

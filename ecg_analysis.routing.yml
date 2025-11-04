@@ -28,3 +28,11 @@ ecg_analysis.report_minute:
     parameters:
       fid:
         type: 'entity:file'
+ecg.report_minute_csv:
+  path: '/admin/ecg/report/{fid}/minute.csv'
+  defaults:
+    _controller: '\Drupal\ecg_analysis\Controller\EcgReportController::minuteCsv'
+  requirements:
+    _permission: 'access administration pages'
+  options:
+    _format: 'csv'

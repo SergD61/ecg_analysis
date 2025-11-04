@@ -9,6 +9,9 @@ use Drupal\Core\Url;
 use Drupal\Core\Link;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
+use Drupal\Core\Database\Database;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * Builds an ECG report page with minute pagination.
@@ -27,8 +30,120 @@ final class EcgReportController extends ControllerBase {
     return new static();
   }
 
+	public function minuteCsv($fid, Request $request): StreamedResponse {
+		$uid = \Drupal::currentUser()->id();
+		// UI передаёт минуты в человеко-понятной нумерации (1-based).
+		$min_ui = max(1, (int) $request->query->get('min', 1));
+		$min = $min_ui - 1; // 0-based для чтения из файла
+
+		$connection = \Drupal::database();
+		$record = $connection->select('ecg_raw_index', 'e')
+			->fields('e')
+			->condition('e.fid', $fid)
+			->condition('e.uid', $uid) // защита по владельцу
+			->execute()
+			->fetchAssoc();
+
+		if (!$record) {
+			throw new \Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException();
+		}
+
+		$uri = $record['uri'];
+		$fs = (int) ($record['fs'] ?: 125);
+		$perMinute = 60 * $fs;
+
+		$startSample = $min * $perMinute;
+		$bytesPerSample = 2; // int16 LE
+		$offsetBytes = $startSample * $bytesPerSample;
+		$lengthSamples = $perMinute;
+
+		// Чтение куска файла потоково.
+		$wrapper = \Drupal::service('stream_wrapper_manager')->getViaUri($uri);
+		$realPath = $wrapper->realpath();
+		if (!is_readable($realPath)) {
+			throw new \Symfony\Component\HttpKernel\Exception\NotFoundHttpException('Raw file is not readable.');
+		}
+
+		$response = new StreamedResponse();
+		$response->setCallback(function() use ($realPath, $offsetBytes, $lengthSamples, $fs, $startSample) {
+			$out = fopen('php://output', 'w');
+
+			// Заголовки CSV
+			fputcsv($out, ['global_sample', 'sample_in_minute', 'amplitude']);
+
+			$fh = fopen($realPath, 'rb');
+			if ($fh === false) {
+				// пустой CSV при проблеме
+				fclose($out);
+				return;
+			}
+
+			// Перематываемся на нужный оффсет.
+			fseek($fh, $offsetBytes, SEEK_SET);
+
+			// Считываем блоком (например, по 8К) и разбираем в int16 LE.
+			$bytesToRead = $lengthSamples * 2;
+			$chunkSize = 8192;
+			$buffer = '';
+			$read = 0;
+			$sampleIndexInMinute = 0;
+			$global = $startSample;
+
+			while ($read < $bytesToRead && !feof($fh)) {
+				$need = min($chunkSize, $bytesToRead - $read);
+				$chunk = fread($fh, $need);
+				if ($chunk === false || $chunk === '') break;
+				$buffer .= $chunk;
+				$read += strlen($chunk);
+
+				// Обрабатываем целые пары байт
+				$pairs = intdiv(strlen($buffer), 2);
+				for ($i = 0; $i < $pairs; $i++) {
+					$lo = ord($buffer[2*$i]);
+					$hi = ord($buffer[2*$i + 1]);
+					// int16 LE в signed
+					$val = $hi << 8 | $lo;
+					if ($val & 0x8000) $val = $val - 0x10000;
+
+					fputcsv($out, [$global, $sampleIndexInMinute, $val]);
+
+					$sampleIndexInMinute++;
+					$global++;
+
+					if ($sampleIndexInMinute >= $lengthSamples) {
+						// нужная минута выгружена
+						break 2;
+					}
+				}
+				// Оставляем «хвост» (если нечётное кол-во байт — маловероятно, но безопасно)
+				$buffer = substr($buffer, $pairs * 2);
+			}
+
+			fclose($fh);
+			fclose($out);
+		});
+
+		$filename = sprintf('ecg_fid%s_min%d.csv', $fid, $min_ui);
+		$response->headers->set('Content-Type', 'text/csv; charset=UTF-8');
+		$response->headers->set('Content-Disposition', 'attachment; filename="'.$filename.'"');
+
+		return $response;
+	}	
+	
 	public function minuteJson(FileInterface $fid): JsonResponse {
 		$file = $fid; $fid = (int) $file->id();
+		$uid = \Drupal::currentUser()->id();
+		$conn = Database::getConnection();
+		$record = $conn->select('ecg_raw_index', 'e')
+			->fields('e')
+			->condition('e.fid', $fid)
+			->condition('e.uid', $uid)
+			->execute()
+			->fetchAssoc();
+
+		if (!$record) {
+			throw new \Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException('Файл не найден или принадлежит другому пользователю.');
+		}
 		$fs = 125;
 
 		$fs_service = \Drupal::service('file_system');

@@ -36,7 +36,13 @@
 
   <button id="ecg-next" class="ecg-btn">След. →</button>
 </div>
-
+<div class="ecg-report__actions">
+  <a id="csv-download"
+     class="button button--primary"
+     href="{{ path('ecg.report_minute_csv', {'fid': fid}) ~ '?min=' ~ current_minute|default(0) }}">
+    Скачать CSV
+  </a>
+</div>
 <h3>RR intervals (ms)</h3>
 {% if rr_ms and rr_ms|length %}
   <ul>
