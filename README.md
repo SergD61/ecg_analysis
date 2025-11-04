@@ -1,4 +1,4 @@
-# 🩺 ECG Analysis (Drupal 11 module)
+# ECG Analysis (Drupal 11 module)
 
 **Repository:** [https://github.com/SergD61/ecg_analysis](https://github.com/SergD61/ecg_analysis)  
 **License:** MIT
@@ -12,7 +12,7 @@
 
 ---
 
-## ✅ Current Features
+## Current Features
 
 - **File upload:** `/admin/ecg/upload-raw`
   - Загрузка бинарных файлов
@@ -35,7 +35,7 @@
 
 ---
 
-## ⚙️ Key Files
+## Key Files
 
 | Path | Purpose |
 |------|----------|
@@ -48,7 +48,7 @@
 
 ---
 
-## 🚧 Next Steps (new branch)
+## Next Steps (new branch)
 
 Planned for the next branch → `feature/r-peak-detection`:
 
